@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ParkWise LA — Home</title>
+    <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+
+<header class="header">
+    <div class="header_inner">
+        <a class="brand" href="#">
+            <span class="brand_mark" aria-hidden="true">P</span>
+            <span class="brand_name">ParkBnB LA</span>
+        </a>
+
+        <div class="search" role="search" aria-label="Parking search">
+            <div class="search_seg">
+                <div class="search_label">Where</div>
+                <input class="search_input" type="text" placeholder="Search destinations" />
+            </div>
+
+            <div class="search_divider" aria-hidden="true"></div>
+
+            <div class="search_seg">
+                <div class="search_label">When</div>
+                <input class="search_input" type="text" placeholder="Add Dates" />
+            </div>
+
+            <div class="search_divider" aria-hidden="true"></div>
+
+            <div class="search_seg search_seg--small">
+                <div class="search_label">Max Walk (min)</div>
+                <input class="search_input" type="text" placeholder="10" />
+            </div>
+
+            <div class="search_divider" aria-hidden="true"></div>
+
+            <div class="search_seg search_seg--last">
+                <div class="search_label">Source</div>
+                <select class="search_select">
+                    <option>Verified Host</option>
+                    <option>Unverified Host</option>
+                </select>
+            </div>
+
+            <a class="search_btn" href="#" aria-label="Search">
+                <span class="search_icon" aria-hidden="true">🔍</span>
+            </a>
+        </div>
+
+        <!-- Right: Actions -->
+        <div class="header-actions">
+            <a class="header-actions_host" href="#">Become a host</a>
+            <button class="header-actions_icon" type="button" aria-label="Language">🌐</button>
+            <button class="header-actions_menu" type="button" aria-label="Menu">≡</button>
+        </div>
+    </div>
+</header>
+
+<main class="container">
+    <section class="hero">
+        <h1 class="hero_title">Quickly Find Parking in LA.</h1>
+        <p class="hero_subtitle">
+            Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book.
+        </p>
+
+        <div class="map-shell">
+            <div class="map-shell_top">
+                <div class="map-shell_title">Map Preview</div>
+                <div class="map-shell_legend"></div>
+            </div>
+
+            <div class="map map--big" aria-label="Map placeholder">
+                <div class="map_grid"></div>
+                <div class="map_pin" aria-hidden="true"></div>
+            </div>
+        </div>
+
+        <section class="row">
+            <div class="panel">
+                <div class="panel_head">
+                    <h2 class="panel_title">How it works</h2>
+                    <p class="panel_desc">
+                        Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book.
+                    </p>
+                </div>
+            </div>
+        </section>
+    </section>
+</main>
+
+</body>
+</html>
