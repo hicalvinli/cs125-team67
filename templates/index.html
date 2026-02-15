@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ParkWise LA — Home</title>
     <link rel="stylesheet" href="../static/css/style.css" />
+
+    <!-- Leaflet CSS -->
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
 </head>
 <body>
 
@@ -18,21 +24,21 @@
         <div class="search" role="search" aria-label="Parking search">
             <div class="search_seg">
                 <div class="search_label">Where</div>
-                <input class="search_input" type="text" placeholder="Search destinations" />
+                <input id="address" class="search_input" type="text" placeholder="Search destinations" />
             </div>
 
             <div class="search_divider" aria-hidden="true"></div>
 
             <div class="search_seg">
                 <div class="search_label">When</div>
-                <input class="search_input" type="text" placeholder="Add Dates" />
+                <input id="date" class="search_input" type="text" placeholder="Add Dates" />
             </div>
 
             <div class="search_divider" aria-hidden="true"></div>
 
             <div class="search_seg search_seg--small">
                 <div class="search_label">Max Walk (min)</div>
-                <input class="search_input" type="text" placeholder="10" />
+                <input id="max_walk" class="search_input" type="text" placeholder="10" />
             </div>
 
             <div class="search_divider" aria-hidden="true"></div>
@@ -45,12 +51,11 @@
                 </select>
             </div>
 
-            <a class="search_btn" href="#" aria-label="Search">
+            <a id="search_btn" class="search_btn" href="#" aria-label="Search">
                 <span class="search_icon" aria-hidden="true">🔍</span>
             </a>
         </div>
 
-        <!-- Right: Actions -->
         <div class="header-actions">
             <a class="header-actions_host" href="#">Become a host</a>
             <button class="header-actions_icon" type="button" aria-label="Language">🌐</button>
@@ -63,7 +68,7 @@
     <section class="hero">
         <h1 class="hero_title">Quickly Find Parking in LA.</h1>
         <p class="hero_subtitle">
-            Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book.
+            Quickly search nearby parking and rank spots by walking time.
         </p>
 
         <div class="map-shell">
@@ -72,24 +77,215 @@
                 <div class="map-shell_legend"></div>
             </div>
 
-            <div class="map map--big" aria-label="Map placeholder">
-                <div class="map_grid"></div>
-                <div class="map_pin" aria-hidden="true"></div>
-            </div>
+            <div id="map" class="map map--big" style="height:500px;"></div>
         </div>
+
+        <div id="results"></div>
 
         <section class="row">
             <div class="panel">
                 <div class="panel_head">
                     <h2 class="panel_title">How it works</h2>
                     <p class="panel_desc">
-                        Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book.
+                         Enter a destination and choose your maximum walking time. We search nearby parking meters and rank available spots by the shortest walking distance.
+                        <br><br>
+                        🔴 <strong>Red pin</strong> – Your searched destination.<br>  
+                        🔵 <strong>Blue pin</strong> – Your current location (requested only when you search).<br>  
+                        🟢 <strong>Green pins</strong> – Vacant parking spots.<br>  
+                        ⚪ <strong>Gray pins</strong> – Parking spots with unknown status.<br>  
                     </p>
                 </div>
             </div>
         </section>
     </section>
 </main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+
+// Initialize map
+let map = L.map('map').setView([34.0522, -118.2437], 12);
+
+// Base layers
+let standardLayer = L.tileLayer(
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { attribution: '&copy; OpenStreetMap contributors' }
+);
+
+let satelliteLayer = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/' +
+    'World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { attribution: 'Tiles © Esri' }
+);
+
+standardLayer.addTo(map);
+
+L.control.layers({
+    "Standard": standardLayer,
+    "Satellite": satelliteLayer
+}).addTo(map);
+
+let markersLayer = L.layerGroup().addTo(map);
+
+// Current location markers
+let userLocationMarker = null;
+let userLocationCircle = null;
+
+document.getElementById("search_btn").addEventListener("click", async function (e) {
+    e.preventDefault();
+
+    const address = document.getElementById("address").value;
+    const date = document.getElementById("date").value;
+    const max_walk = document.getElementById("max_walk").value;
+
+    if (!address || !max_walk) {
+        alert("Please enter address and max walk.");
+        return;
+    }
+
+    // Ask for current location on search
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(function(position) {
+
+            const userLat = position.coords.latitude;
+            const userLon = position.coords.longitude;
+
+            if (userLocationMarker) map.removeLayer(userLocationMarker);
+            if (userLocationCircle) map.removeLayer(userLocationCircle);
+
+            // 🔵 Current location = Blue
+            userLocationMarker = L.circleMarker([userLat, userLon], {
+                radius: 9,
+                color: "#1d4ed8",
+                fillColor: "#3b82f6",
+                fillOpacity: 1
+            }).addTo(map);
+
+            userLocationMarker.bindPopup("<strong>Your Location</strong>");
+
+            userLocationCircle = L.circle([userLat, userLon], {
+                radius: position.coords.accuracy,
+                color: "#3b82f6",
+                fillColor: "#3b82f6",
+                fillOpacity: 0.15
+            }).addTo(map);
+
+        });
+    }
+
+    try {
+        const response = await fetch(
+            `/api/parking?address=${encodeURIComponent(address)}&date=${date}&max_walk=${max_walk}`
+        );
+
+        if (!response.ok) throw new Error("Server error");
+
+        const data = await response.json();
+        displayResults(data);
+
+    } catch (error) {
+        console.error(error);
+        alert("Error fetching parking data.");
+    }
+});
+
+function displayResults(responseData) {
+
+    const resultDiv = document.getElementById("results");
+    resultDiv.innerHTML = "";
+    markersLayer.clearLayers();
+
+    const searchLat = responseData.search_location.latitude;
+    const searchLon = responseData.search_location.longitude;
+    const data = responseData.parking_spots;
+
+    let bounds = [];
+    let count = Object.keys(data).length;
+
+    // 🔴 Search location = Red
+    const searchMarker = L.circleMarker([searchLat, searchLon], {
+        radius: 10,
+        color: "#dc2626",
+        fillColor: "#ef4444",
+        fillOpacity: 0.9
+    }).addTo(markersLayer);
+
+    searchMarker.bindPopup("<strong>Searched Location</strong>");
+    bounds.push([searchLat, searchLon]);
+
+    // 🟡 Show result count message
+    const messageDiv = document.createElement("div");
+
+    if (count === 0) {
+        messageDiv.innerHTML = `
+            <p style="color:#dc2626; font-weight:600;">
+                ❌ No parking spots found within your walking limit.
+            </p>
+            <hr>
+        `;
+    } else {
+        messageDiv.innerHTML = `
+            <p style="color:#16a34a; font-weight:600;">
+                ✅ ${count} parking spot${count > 1 ? 's' : ''} found.
+            </p>
+            <hr>
+        `;
+    }
+
+    resultDiv.appendChild(messageDiv);
+
+    // Add parking markers
+    for (const spaceid in data) {
+        const spot = data[spaceid];
+
+        const lat = spot.latlng.latitude;
+        const lon = spot.latlng.longitude;
+
+        bounds.push([lat, lon]);
+
+        // 🟢 VACANT = Green, ⚪ UNKNOWN = Gray
+        const color = spot.occupancy === "VACANT" ? "#16a34a" : "#6b7280";
+
+        const marker = L.circleMarker([lat, lon], {
+            radius: 8,
+            color: color,
+            fillColor: color,
+            fillOpacity: 0.8
+        }).addTo(markersLayer);
+
+        marker.bindPopup(`
+            <strong>Spot ID:</strong> ${spaceid}<br>
+            Walk Time: ${spot.walk_time.toFixed(2)} mins<br>
+            Status: ${spot.occupancy}
+        `);
+
+        const rateType = spot.ratetype ?? "N/A";
+        const rateRange = spot.raterange ?? "N/A";
+        const timeLimit = spot.timelimit ?? "N/A";
+
+        const div = document.createElement("div");
+        div.innerHTML = `
+            <p>
+                <strong>Spot ID:</strong> ${spaceid}<br>
+                <strong>Walk Time:</strong> ${spot.walk_time.toFixed(2)} mins<br>
+                <strong>Rate Type:</strong> ${rateType}<br>
+                <strong>Rate Range:</strong> ${rateRange}<br>
+                <strong>Time Limit:</strong> ${timeLimit} mins<br>
+                <strong>Status:</strong> ${spot.occupancy}
+            </p>
+            <hr>
+        `;
+        resultDiv.appendChild(div);
+    }
+
+    if (bounds.length > 0) {
+        map.fitBounds(bounds, { padding: [50, 50] });
+    }
+}
+
+
+</script>
 
 </body>
 </html>
