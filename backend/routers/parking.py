@@ -107,8 +107,14 @@ async def get_parking(address: str, date: str, max_walk: int):
         meter_info = new_meter_info
         print(f"Found {len(meter_info)} available spots near {lat}, {lon}")
 
-        # Return sorted results in json format
-        return json.dumps(dict(sorted(
-            meter_info.items(),
-            key=lambda item: (item[1]['walk_time'], item[1]['walk_distance'])
-        )))
+        # Return structured response with search location and sorted parking spots
+        return {
+            "search_location": {
+                "latitude": lat,
+                "longitude": lon
+            },
+            "parking_spots": dict(sorted(
+                meter_info.items(),
+                key=lambda item: (item[1]['walk_time'], item[1]['walk_distance'])
+            ))
+        }
