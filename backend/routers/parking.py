@@ -6,6 +6,7 @@ import json
 import httpx
 import osmnx as ox
 import networkx as nx
+from datetime import datetime
 from fastapi import APIRouter
 from dotenv import load_dotenv
 from fastapi import HTTPException
@@ -65,6 +66,11 @@ def haversine(lat1, lon1, lat2, lon2):
 # sortBy can be: [time, user_distance, or price]
 @router.get("/")
 async def get_parking(address: str, max_walk: int, time: str, usr_lat: float, usr_lon: float, sortBy: str = "time"):
+
+    # Increase occupancy penalty in peak hours
+    hour = datetime.now().hour
+    is_peak = 7 <= hour <= 9 or 16 <= hour <= 19 or 11 <= hour <= 1
+    occupancy_penalty = 0.25 if is_peak else 0.1
 
     # min_time expected in format HH:MM
     desired_parking_minutes = int(time.split(":")[0]) * 60 + int(time.split(":")[1])
@@ -144,6 +150,9 @@ async def get_parking(address: str, max_walk: int, time: str, usr_lat: float, us
                 else:
                     meter["walk_distance"], meter["walk_time"] = dist, minutes
 
+                # If occupancy state is unknown, penalize walk_time so it is ranked below known vacant spots
+                meter["adjusted_walk_time"] = meter["walk_time"] + (occupancy_penalty if meter["occupancy"] == "UNKNOWN" else 0)
+
                 # Calculate total cost
                 meter["total_cost"] = parse_and_calculate_cost(meter["raterange"], desired_parking_minutes)
 
@@ -155,9 +164,9 @@ async def get_parking(address: str, max_walk: int, time: str, usr_lat: float, us
         meter_info = new_meter_info
         print(f"Found {len(meter_info)} available spots near {lat}, {lon}")
 
-        sort_lambdas = {"time": lambda item: (item[1]['walk_time'], item[1]['total_cost']),
-                        "price": lambda item: (item[1]['total_cost'], item[1]['walk_time']),
-                        "user_distance": lambda item: (item[1]['user_distance'], item[1]['walk_time'])
+        sort_lambdas = {"time": lambda item: (item[1]['adjusted_walk_time'], item[1]['total_cost']),
+                        "price": lambda item: (item[1]['total_cost'], item[1]['adjusted_walk_time']),
+                        "user_distance": lambda item: (item[1]['user_distance'], item[1]['adjusted_walk_time'])
                         }
 
         # Return sorted results in json format
