@@ -64,7 +64,7 @@ def haversine(lat1, lon1, lat2, lon2):
 
 # sortBy can be: [time, user_distance, or price]
 @router.get("/")
-async def get_parking(address: str, max_walk: int, time: str, sortBy: str, usr_lat: float, usr_lon: float):
+async def get_parking(address: str, max_walk: int, time: str, usr_lat: float, usr_lon: float, sortBy: str = "time"):
 
     # min_time expected in format HH:MM
     desired_parking_minutes = int(time.split(":")[0]) * 60 + int(time.split(":")[1])
