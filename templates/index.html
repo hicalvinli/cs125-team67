@@ -445,6 +445,7 @@ async function loadFeatured() {
 
             const card = document.createElement("div");
             card.className = "featured-card";
+            card.style.cursor = "pointer";
             card.innerHTML = `
                 <div class="featured-card-label">${labels[key] ?? key}</div>
                 <div class="featured-card-address">${address}</div>
@@ -454,7 +455,31 @@ async function loadFeatured() {
                     <span>💰 ${cost}</span>
                     <span style="color:${occupancyColor}">● ${spot.occupancy}</span>
                 </div>
+                <div class="featured-card-detail" style="display:none; margin-top:12px; border-top:1px solid var(--stroke2); padding-top:10px;">
+                    <p style="margin:4px 0; font-size:0.82rem; color:var(--muted)"><strong style="color:var(--text)">Space ID:</strong> ${spot.spaceid}</p>
+                    <p style="margin:4px 0; font-size:0.82rem; color:var(--muted)"><strong style="color:var(--text)">Rate Type:</strong> ${spot.ratetype ?? "N/A"}</p>
+                    <p style="margin:4px 0; font-size:0.82rem; color:var(--muted)"><strong style="color:var(--text)">Rate Range:</strong> ${spot.raterange ?? "N/A"}</p>
+                    <p style="margin:4px 0; font-size:0.82rem; color:var(--muted)"><strong style="color:var(--text)">Time Limit:</strong> ${spot.timelimit ?? "N/A"}</p>
+                    <div style="display:flex; gap:10px; margin-top:12px;">
+                        <button class="btn-select" onclick="selectSpot('${spot.spaceid}', ${spot.latlng.latitude}, ${spot.latlng.longitude}); event.stopPropagation();">
+                            ✅ Select this spot
+                        </button>
+                        <a class="btn-directions"
+                           href="https://www.google.com/maps/dir/?api=1&destination=${spot.latlng.latitude},${spot.latlng.longitude}"
+                           target="_blank"
+                           onclick="selectSpot('${spot.spaceid}', ${spot.latlng.latitude}, ${spot.latlng.longitude}); event.stopPropagation();">
+                            🗺 Get Directions
+                        </a>
+                    </div>
+                </div>
             `;
+
+            card.addEventListener("click", function() {
+                const detail = this.querySelector(".featured-card-detail");
+                const isOpen = detail.style.display !== "none";
+                detail.style.display = isOpen ? "none" : "block";
+            });
+
             container.appendChild(card);
         }
 
