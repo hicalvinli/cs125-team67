@@ -15,6 +15,8 @@ DELTA = 5
 WALKING_SPEED = 1.3
 METER_URL = "https://data.lacity.org/api/v3/views/s49e-q6j2/query.json"
 OCCUPANCY_URL = "https://data.lacity.org/api/v3/views/e7h6-4a3e/query.json"
+TIME_LIMITS = {15: "15MIN", 30: "30MIN", 60: "1HR", 120: "2HR", 150: "2HR-30MIN", 240: "4HR",
+               360: "6HR", 420: "7HR", 600: "10HR", 840: "14HR"}
 
 geolocator = Nominatim(user_agent="cs125_parkwise")
 
@@ -33,7 +35,15 @@ def get_lat_lon(address: str) -> (float, float):
         raise ValueError
 
 @router.get("/")
-async def get_parking(address: str, date: str, max_walk: int):
+async def get_parking(address: str, max_walk: int, min_time: str, sortBy: str, usr_loc: str):
+
+    # min_time expected in format HH:MM
+    min_minutes = int(min_time.split(":")[0]) * 60 + int(min_time.split(":")[1])
+    valid_times = []
+    for k in TIME_LIMITS.keys():
+        if k >= min_minutes:
+            valid_times.append(TIME_LIMITS[k])
+    valid_times = ",".join(f"'{time_limit}'" for time_limit in valid_times)
 
     # Geocode provided address
     try:
@@ -50,7 +60,7 @@ async def get_parking(address: str, date: str, max_walk: int):
     # Get nearby parking meters
     meter_info = {}
     json_body = {
-        "query": f"SELECT * WHERE within_circle(LatLng, {lat}, {lon}, {radius})"
+        "query": f"SELECT * WHERE within_circle(LatLng, {lat}, {lon}, {radius}) and MeteredTimeLimit in ({valid_times})"
     }
     headers = {
         "X-App-Token": os.getenv("APP_TOKEN"),
