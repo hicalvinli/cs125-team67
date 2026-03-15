@@ -30,8 +30,8 @@
             <div class="search_divider" aria-hidden="true"></div>
 
             <div class="search_seg">
-                <div class="search_label">When</div>
-                <input id="date" class="search_input" type="text" placeholder="Add Dates" />
+                <div class="search_label">Duration (HH:MM)</div>
+                <input id="duration" class="search_input" type="text" placeholder="01:30" />
             </div>
 
             <div class="search_divider" aria-hidden="true"></div>
@@ -44,10 +44,12 @@
             <div class="search_divider" aria-hidden="true"></div>
 
             <div class="search_seg search_seg--last">
-                <div class="search_label">Source</div>
-                <select class="search_select">
-                    <option>Verified Host</option>
-                    <option>Unverified Host</option>
+                <div class="search_label">Sort By</div>
+                <select id="sort_by" class="search_select">
+                    <option value="default">Recommended</option>
+                    <option value="time">Walk Time</option>
+                    <option value="user_distance">Distance to You</option>
+                    <option value="price">Price</option>
                 </select>
             </div>
 
@@ -87,12 +89,12 @@
                 <div class="panel_head">
                     <h2 class="panel_title">How it works</h2>
                     <p class="panel_desc">
-                         Enter a destination and choose your maximum walking time. We search nearby parking meters and rank available spots by the shortest walking distance.
+                        Enter a destination, how long you plan to park, and your maximum walking time. We search nearby parking meters and rank available spots by the shortest walking distance.
                         <br><br>
-                        🔴 <strong>Red pin</strong> – Your searched destination.<br>  
-                        🔵 <strong>Blue pin</strong> – Your current location (requested only when you search).<br>  
-                        🟢 <strong>Green pins</strong> – Vacant parking spots.<br>  
-                        ⚪ <strong>Gray pins</strong> – Parking spots with unknown status.<br>  
+                        🔴 <strong>Red pin</strong> – Your searched destination.<br>
+                        🔵 <strong>Blue pin</strong> – Your current location (requested only when you search).<br>
+                        🟢 <strong>Green pins</strong> – Vacant parking spots.<br>
+                        ⚪ <strong>Gray pins</strong> – Parking spots with unknown status.<br>
                     </p>
                 </div>
             </div>
@@ -132,53 +134,81 @@ let markersLayer = L.layerGroup().addTo(map);
 let userLocationMarker = null;
 let userLocationCircle = null;
 
+// Restore saved preferences
+const savedSort = localStorage.getItem("lastSortBy");
+const savedWalk = localStorage.getItem("lastMaxWalk");
+if (savedSort) document.getElementById("sort_by").value = savedSort;
+if (savedWalk) document.getElementById("max_walk").value = savedWalk;
+
+function getUserLocation() {
+    return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+            reject(new Error("Geolocation not supported"));
+            return;
+        }
+        navigator.geolocation.getCurrentPosition(
+            position => resolve(position.coords),
+            error => reject(error)
+        );
+    });
+}
+
 document.getElementById("search_btn").addEventListener("click", async function (e) {
     e.preventDefault();
 
-    const address = document.getElementById("address").value;
-    const date = document.getElementById("date").value;
-    const max_walk = document.getElementById("max_walk").value;
+    const address = document.getElementById("address").value.trim();
+    const duration = document.getElementById("duration").value.trim();
+    const max_walk = document.getElementById("max_walk").value.trim();
+    const sort_by = document.getElementById("sort_by").value;
 
     if (!address || !max_walk) {
-        alert("Please enter address and max walk.");
+        alert("Please enter an address and max walk time.");
         return;
     }
 
-    // Ask for current location on search
-    if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(function(position) {
+    // Save preferences
+    localStorage.setItem("lastSortBy", sort_by);
+    localStorage.setItem("lastMaxWalk", max_walk);
 
-            const userLat = position.coords.latitude;
-            const userLon = position.coords.longitude;
+    // Get user location
+    let userLat = null;
+    let userLon = null;
 
-            if (userLocationMarker) map.removeLayer(userLocationMarker);
-            if (userLocationCircle) map.removeLayer(userLocationCircle);
+    try {
+        const coords = await getUserLocation();
+        userLat = coords.latitude;
+        userLon = coords.longitude;
 
-            // 🔵 Current location = Blue
-            userLocationMarker = L.circleMarker([userLat, userLon], {
-                radius: 9,
-                color: "#1d4ed8",
-                fillColor: "#3b82f6",
-                fillOpacity: 1
-            }).addTo(map);
+        if (userLocationMarker) map.removeLayer(userLocationMarker);
+        if (userLocationCircle) map.removeLayer(userLocationCircle);
 
-            userLocationMarker.bindPopup("<strong>Your Location</strong>");
+        userLocationMarker = L.circleMarker([userLat, userLon], {
+            radius: 9,
+            color: "#1d4ed8",
+            fillColor: "#3b82f6",
+            fillOpacity: 1
+        }).addTo(map);
+        userLocationMarker.bindPopup("<strong>Your Location</strong>");
 
-            userLocationCircle = L.circle([userLat, userLon], {
-                radius: position.coords.accuracy,
-                color: "#3b82f6",
-                fillColor: "#3b82f6",
-                fillOpacity: 0.15
-            }).addTo(map);
+        userLocationCircle = L.circle([userLat, userLon], {
+            radius: coords.accuracy,
+            color: "#3b82f6",
+            fillColor: "#3b82f6",
+            fillOpacity: 0.15
+        }).addTo(map);
 
-        });
+    } catch (error) {
+        console.warn("Could not get user location, using default:", error.message);
+        userLat = 34.0522;
+        userLon = -118.2437;
     }
 
     try {
-        const response = await fetch(
-            `/api/parking?address=${encodeURIComponent(address)}&date=${date}&max_walk=${max_walk}`
-        );
+        let url = `/api/parking?user_id=1&address=${encodeURIComponent(address)}&max_walk=${max_walk}&sortBy=${sort_by}`;
+        if (duration) url += `&time=${encodeURIComponent(duration)}`;
+        if (userLat !== null) url += `&usr_lat=${userLat}&usr_lon=${userLon}`;
 
+        const response = await fetch(url);
         if (!response.ok) throw new Error("Server error");
 
         const data = await response.json();
@@ -210,13 +240,10 @@ function displayResults(responseData) {
         fillColor: "#ef4444",
         fillOpacity: 0.9
     }).addTo(markersLayer);
-
     searchMarker.bindPopup("<strong>Searched Location</strong>");
     bounds.push([searchLat, searchLon]);
 
-    // 🟡 Show result count message
     const messageDiv = document.createElement("div");
-
     if (count === 0) {
         messageDiv.innerHTML = `
             <p style="color:#dc2626; font-weight:600;">
@@ -232,19 +259,14 @@ function displayResults(responseData) {
             <hr>
         `;
     }
-
     resultDiv.appendChild(messageDiv);
 
-    // Add parking markers
     for (const spaceid in data) {
         const spot = data[spaceid];
-
         const lat = spot.latlng.latitude;
         const lon = spot.latlng.longitude;
-
         bounds.push([lat, lon]);
 
-        // 🟢 VACANT = Green, ⚪ UNKNOWN = Gray
         const color = spot.occupancy === "VACANT" ? "#16a34a" : "#6b7280";
 
         const marker = L.circleMarker([lat, lon], {
@@ -263,6 +285,8 @@ function displayResults(responseData) {
         const rateType = spot.ratetype ?? "N/A";
         const rateRange = spot.raterange ?? "N/A";
         const timeLimit = spot.timelimit ?? "N/A";
+        const totalCost = spot.total_cost != null ? `$${spot.total_cost.toFixed(2)}` : "N/A";
+        const userDist = spot.user_distance != null ? `${Math.round(spot.user_distance)}m` : "N/A";
 
         const div = document.createElement("div");
         div.innerHTML = `
@@ -271,7 +295,9 @@ function displayResults(responseData) {
                 <strong>Walk Time:</strong> ${spot.walk_time.toFixed(2)} mins<br>
                 <strong>Rate Type:</strong> ${rateType}<br>
                 <strong>Rate Range:</strong> ${rateRange}<br>
-                <strong>Time Limit:</strong> ${timeLimit} mins<br>
+                <strong>Time Limit:</strong> ${timeLimit}<br>
+                <strong>Estimated Cost:</strong> ${totalCost}<br>
+                <strong>Distance from You:</strong> ${userDist}<br>
                 <strong>Status:</strong> ${spot.occupancy}
             </p>
             <hr>
@@ -283,7 +309,6 @@ function displayResults(responseData) {
         map.fitBounds(bounds, { padding: [50, 50] });
     }
 }
-
 
 </script>
 

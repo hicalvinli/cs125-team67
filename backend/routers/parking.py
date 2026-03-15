@@ -283,22 +283,22 @@ async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_
                         }
 
         # Return structured response with search location and sorted parking spots
-        # return {
-        #     "search_location": {
-        #         "latitude": lat,
-        #         "longitude": lon
-        #     },
-        #     "parking_spots": dict(sorted(
-        #         meter_info.items(),
-        #         key=sort_lambdas[sortBy]
-        #     ))
-        # }
+        return {
+            "search_location": {
+                "latitude": lat,
+                "longitude": lon
+            },
+            "parking_spots": dict(sorted(
+                meter_info.items(),
+                key=sort_lambdas[sortBy]
+            ))
+        }
 
-        # Return sorted results in json format, easier for backend testing. Comment out for prod
-        return json.dumps(dict(sorted(
-            meter_info.items(),
-            key=sort_lambdas[sortBy]
-        )))
+        # # Return sorted results in json format, easier for backend testing. Comment out for prod
+        # return json.dumps(dict(sorted(
+        #     meter_info.items(),
+        #     key=sort_lambdas[sortBy]
+        # )))
 
 @router.get("/suggestions")
 async def get_suggestions(user_id: str):
