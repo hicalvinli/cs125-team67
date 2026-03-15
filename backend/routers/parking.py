@@ -1,5 +1,7 @@
 import os
+import re
 import time
+import math
 import json
 import httpx
 import osmnx as ox
@@ -34,14 +36,33 @@ def get_lat_lon(address: str) -> (float, float):
     else:
         raise ValueError
 
+def parse_and_calculate_cost(rate_range: str, minutes):
+    hours = math.ceil(minutes / 60)
+    if rate_range[-1] != "H":
+        per_hour = float(rate_range.split("$")[-1])
+        return hours * per_hour
+    else:
+        per_hour, jump = rate_range.split(" - ")
+        per_hour = float(re.sub(r'[^\d.]', '', per_hour))
+        regular_cost = hours * per_hour
+
+        jump_per_hour, jump = jump.split("/")
+        jump = float(jump[:-1])
+        jump_per_hour = float(re.sub(r'[^\d.]', '', jump_per_hour))
+        jump_cost = math.ceil(hours / jump) * jump_per_hour
+
+        return min(regular_cost, jump_cost)
+
+
+# sortBy can be: [time, venue_distance, user_distance, or price]
 @router.get("/")
-async def get_parking(address: str, max_walk: int, min_time: str, sortBy: str, usr_loc: str):
+async def get_parking(address: str, max_walk: int, time: str, sortBy: str, usr_loc: str):
 
     # min_time expected in format HH:MM
-    min_minutes = int(min_time.split(":")[0]) * 60 + int(min_time.split(":")[1])
+    minutes = int(time.split(":")[0]) * 60 + int(time.split(":")[1])
     valid_times = []
     for k in TIME_LIMITS.keys():
-        if k >= min_minutes:
+        if k >= minutes:
             valid_times.append(TIME_LIMITS[k])
     valid_times = ",".join(f"'{time_limit}'" for time_limit in valid_times)
 
@@ -60,7 +81,8 @@ async def get_parking(address: str, max_walk: int, min_time: str, sortBy: str, u
     # Get nearby parking meters
     meter_info = {}
     json_body = {
-        "query": f"SELECT * WHERE within_circle(LatLng, {lat}, {lon}, {radius}) and MeteredTimeLimit in ({valid_times})"
+        "query": f"SELECT spaceid, blockface, ratetype, raterange, timelimit, latlng "
+                 f"WHERE within_circle(LatLng, {lat}, {lon}, {radius}) and timelimit in ({valid_times})"
     }
     headers = {
         "X-App-Token": os.getenv("APP_TOKEN"),
@@ -113,12 +135,23 @@ async def get_parking(address: str, max_walk: int, min_time: str, sortBy: str, u
                     continue
                 else:
                     meter["walk_distance"], meter["walk_time"] = dist, minutes
-                    new_meter_info[spaceid] = meter
+
+                # Calculate total cost
+                meter["total_cost"] = parse_and_calculate_cost(meter["raterange"], minutes)
+
+                new_meter_info[spaceid] = meter
+        del meter_info
         meter_info = new_meter_info
         print(f"Found {len(meter_info)} available spots near {lat}, {lon}")
+
+        sort_lambdas = {"time": lambda item: (item[1]['walk_time'], item[1]['walk_distance']),
+                        "venue_distance": lambda item: (item[1]['walk_distance'], item[1]['walk_time']),
+                        "price": lambda item: (item[1]['total_cost'], item[1]['walk_time']),
+                        "user_distance": None
+                        }
 
         # Return sorted results in json format
         return json.dumps(dict(sorted(
             meter_info.items(),
-            key=lambda item: (item[1]['walk_time'], item[1]['walk_distance'])
+            key=sort_lambdas[sortBy]
         )))
