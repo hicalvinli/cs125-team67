@@ -20,7 +20,9 @@ METER_URL = "https://data.lacity.org/api/v3/views/s49e-q6j2/query.json"
 OCCUPANCY_URL = "https://data.lacity.org/api/v3/views/e7h6-4a3e/query.json"
 TIME_LIMITS = {15: "15MIN", 30: "30MIN", 60: "1HR", 120: "2HR", 150: "2HR-30MIN", 240: "4HR",
                360: "6HR", 420: "7HR", 600: "10HR", 840: "14HR"}
-HISTORY_FILE = "user_history.json"
+USER_HISTORY_FILE = "user_history.json"
+SAVED_SEARCH_FILE = "saved_last_search.json"
+DEFAULT_WEIGHTS = {"w_time": 1.0, "w_distance": 1.0, "w_cost": 1.0}
 
 geolocator = Nominatim(user_agent="cs125_parkwise")
 
@@ -72,9 +74,9 @@ def haversine(lat1, lon1, lat2, lon2) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def load_history() -> dict:
-    if not os.path.exists(HISTORY_FILE):
+    if not os.path.exists(USER_HISTORY_FILE):
         return {}
-    with open(HISTORY_FILE, "r") as f:
+    with open(USER_HISTORY_FILE, "r") as f:
         return json.load(f)
 
 def save_search(user_id: str, address: str, lat: float, lon: float, spaces: dict) -> None:
@@ -84,15 +86,70 @@ def save_search(user_id: str, address: str, lat: float, lon: float, spaces: dict
         "lat": lat,
         "lon": lon,
         "featured_spaces": spaces,
+        "weights": history.get(user_id, {}).get("weights", DEFAULT_WEIGHTS.copy()),
         "timestamp": time.time()
     }
 
-    with open(HISTORY_FILE, "w") as f:
+    with open(USER_HISTORY_FILE, "w") as f:
         json.dump(history, f)
 
-# sortBy can be: [time, user_distance, or price]
+def get_weights(user_id: str) -> dict:
+    history = load_history()
+    return history.get(user_id, {}).get("weights", DEFAULT_WEIGHTS.copy())
+
+def update_weights(user_id: str, selected_space: dict, spaces: dict):
+    weights = get_weights(user_id)
+    history = load_history()
+
+    # Get average of metrics
+    avg_time = sum(s["walk_time"] for s in spaces.values()) / len(spaces)
+    avg_cost = sum(s["total_cost"] for s in spaces.values()) / len(spaces)
+    avg_dist = sum(s["user_distance"] for s in spaces.values()) / len(spaces)
+
+    # If selected was better than average, increase weight
+    if selected_space["total_cost"] < avg_cost:
+        weights["w_cost"] *= 1.2
+    if selected_space["walk_time"] < avg_time:
+        weights["w_time"] *= 1.2
+    if selected_space["user_distance"] < avg_dist:
+        weights["w_distance"] *= 1.2
+
+    # Normalize
+    total = sum(weights.values())
+    weights = {k: v / total for k, v in weights.items()}
+
+    history[user_id]["weights"] = weights
+    with open(USER_HISTORY_FILE, "w") as f:
+        json.dump(history, f)
+
+
+def score(space: dict, weights: dict, max_time: float, max_dist: float, max_cost: float) -> float:
+    # Lower score is better, since lower walk_time, user_distance, and total_cost is (intuitively) better
+    # Normalize dimensions to prevent distance taking over
+    norm_time = space["walk_time"] / max_time if max_time else 0
+    norm_dist = space["user_distance"] / max_dist if max_dist else 0
+    norm_cost = space["total_cost"] / max_cost if max_cost else 0
+
+    return (weights["w_time"] * norm_time +
+            weights["w_distance"] * norm_dist +
+            weights["w_cost"] * norm_cost)
+
+def save_results(user_id: str, spaces: dict) -> None:
+    searches = load_results(user_id)
+    searches[user_id] = spaces
+    with open(SAVED_SEARCH_FILE, "w") as f:
+        json.dump(searches, f)
+
+def load_results(user_id: str) -> dict:
+    if not os.path.exists(SAVED_SEARCH_FILE):
+        return {}
+    with open(SAVED_SEARCH_FILE, "r") as f:
+        searches = json.load(f)
+    return searches.get(user_id, {})
+
+# sortBy can be: [time, user_distance, price, or default]
 @router.get("/")
-async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_lat: float, usr_lon: float, sortBy: str = "time"):
+async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_lat: float, usr_lon: float, sortBy: str = "default"):
 
     # Increase occupancy penalty in peak hours
     hour = datetime.now().hour
@@ -120,7 +177,6 @@ async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_
     radius = max_walk * 60 * WALKING_SPEED
 
     # Get nearby parking meters
-    meter_info = {}
     json_body = {
         "query": f"SELECT spaceid, blockface, ratetype, raterange, timelimit, latlng "
                  f"WHERE within_circle(LatLng, {lat}, {lon}, {radius}) and timelimit in ({valid_times})"
@@ -190,6 +246,17 @@ async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_
         del meter_info
         meter_info = new_meter_info
         print(f"Found {len(meter_info)} available spots near {lat}, {lon}")
+        if not meter_info:
+            return {}
+
+        max_time = max(s["walk_time"] for s in meter_info.values())
+        max_dist = max(s["user_distance"] for s in meter_info.values())
+        max_cost = max(s["total_cost"] for s in meter_info.values())
+        weights = get_weights(user_id)
+        for space_id in meter_info.keys():
+            meter_info[space_id]["score"] = score(meter_info[space_id], weights, max_time, max_dist, max_cost)
+
+        save_results(user_id, meter_info)
 
         if len(meter_info) > 0:
             # Get official address
@@ -203,27 +270,35 @@ async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_
 
             # Save search
             save_search(user_id, full_address, lat, lon, {
+                "best": min(meter_info.values(), key = lambda item: item["score"]),
                 "closest_to_user": min(meter_info.values(), key = lambda item: item["user_distance"]),
                 "cheapest": min(meter_info.values(), key = lambda item: item["total_cost"]),
                 "closest_to_venue": min(meter_info.values(), key = lambda item: item["walk_time"])
             })
 
-        sort_lambdas = {"time": lambda item: (item[1]['adjusted_walk_time'], item[1]['total_cost']),
+        sort_lambdas = {"default": lambda item: (item[1]['score'], item[1]["adjusted_walk_time"]),
+                        "time": lambda item: (item[1]['adjusted_walk_time'], item[1]['total_cost']),
                         "price": lambda item: (item[1]['total_cost'], item[1]['adjusted_walk_time']),
                         "user_distance": lambda item: (item[1]['user_distance'], item[1]['adjusted_walk_time'])
                         }
 
         # Return structured response with search location and sorted parking spots
-        return {
-            "search_location": {
-                "latitude": lat,
-                "longitude": lon
-            },
-            "parking_spots": dict(sorted(
-                meter_info.items(),
-                key=sort_lambdas[sortBy]
-            ))
-        }
+        # return {
+        #     "search_location": {
+        #         "latitude": lat,
+        #         "longitude": lon
+        #     },
+        #     "parking_spots": dict(sorted(
+        #         meter_info.items(),
+        #         key=sort_lambdas[sortBy]
+        #     ))
+        # }
+
+        # Return sorted results in json format, easier for backend testing. Comment out for prod
+        return json.dumps(dict(sorted(
+            meter_info.items(),
+            key=sort_lambdas[sortBy]
+        )))
 
 @router.get("/suggestions")
 async def get_suggestions(user_id: str):
@@ -232,3 +307,10 @@ async def get_suggestions(user_id: str):
         return user_history["featured_spaces"]
     else:
         return {}
+
+@router.post("/select")
+async def record_selection(user_id: str, space_id: str):
+    spots = load_results(user_id)
+    selected = spots[space_id]
+    update_weights(user_id, selected, spots)
+    return {"status": "ok"}

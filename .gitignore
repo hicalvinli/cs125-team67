@@ -242,3 +242,4 @@ cython_debug/
 .idea/
 backend/cache/
 user_history.json
+saved_last_search.json
