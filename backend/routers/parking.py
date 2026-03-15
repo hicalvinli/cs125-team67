@@ -191,20 +191,22 @@ async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_
         meter_info = new_meter_info
         print(f"Found {len(meter_info)} available spots near {lat}, {lon}")
 
-        # Get official address
-        try:
-            full_address = get_address(lat, lon)
-        except ValueError:
-            raise HTTPException(status_code = 400, detail = "Invalid lat/lon")
-        except GeocoderServiceError as e:
-            print(f"Geocoding service error: {e}")
-            raise HTTPException(status_code = 503, detail = "Geocoding service unavailable")
+        if len(meter_info) > 0:
+            # Get official address
+            try:
+                full_address = get_address(lat, lon)
+            except ValueError:
+                raise HTTPException(status_code = 400, detail = "Invalid lat/lon")
+            except GeocoderServiceError as e:
+                print(f"Geocoding service error: {e}")
+                raise HTTPException(status_code = 503, detail = "Geocoding service unavailable")
 
-        save_search(user_id, full_address, lat, lon, {
-            "closest": min(meter_info.values(), key = lambda item: item["walk_time"]),
-            "cheapest": min(meter_info.values(), key = lambda item: item["total_cost"]),
-            "best": min(meter_info.values(), key = lambda item: item["walk_time"] + item["total_cost"])
-        })
+            # Save search
+            save_search(user_id, full_address, lat, lon, {
+                "closest_to_user": min(meter_info.values(), key = lambda item: item["user_distance"]),
+                "cheapest": min(meter_info.values(), key = lambda item: item["total_cost"]),
+                "closest_to_venue": min(meter_info.values(), key = lambda item: item["walk_time"])
+            })
 
         sort_lambdas = {"time": lambda item: (item[1]['adjusted_walk_time'], item[1]['total_cost']),
                         "price": lambda item: (item[1]['total_cost'], item[1]['adjusted_walk_time']),
@@ -219,4 +221,8 @@ async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_
 
 @router.get("/suggestions")
 async def get_suggestions(user_id: str):
-    with open("r", f"{user_id}.json") as f:
+    user_history = load_history().get(user_id, None)
+    if user_history is not None:
+        return user_history["featured_spaces"]
+    else:
+        return {}
