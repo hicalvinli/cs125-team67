@@ -304,7 +304,9 @@ async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_
 async def get_suggestions(user_id: str):
     user_history = load_history().get(user_id, None)
     if user_history is not None:
-        return user_history["featured_spaces"]
+        result = dict(user_history["featured_spaces"])
+        result["address"] = user_history.get("address", "")
+        return result
     else:
         return {}
 

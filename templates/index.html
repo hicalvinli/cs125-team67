@@ -73,6 +73,10 @@
             Quickly search nearby parking and rank spots by walking time.
         </p>
 
+        <div id="featured-section" style="display:none;">
+            <h2 class="panel_title">You've searched here before</h2>
+            <div id="featured-cards" class="featured-grid"></div>
+        </div>
 
         <div class="map-shell">
             <div class="map-shell_top">
@@ -406,7 +410,69 @@ function updateMapMarkers(searchLocation, spots) {
     if (bounds.length > 0) map.fitBounds(bounds, { padding: [50, 50] });
 }
 
+async function loadFeatured() {
+    try {
+        const response = await fetch("/api/parking/suggestions?user_id=1");
+        if (!response.ok) return;
 
+        const data = await response.json();
+        const parsed = typeof data === "string" ? JSON.parse(data) : data;
+        console.log("Parsed:", parsed);
+
+        const section = document.getElementById("featured-section");
+        const container = document.getElementById("featured-cards");
+        container.innerHTML = "";
+
+        const labels = {
+            best: "⭐ Best Overall",
+            cheapest: "💰 Cheapest",
+            closest_to_venue: "🎯 Closest to Venue",
+            closest_to_user: "📍 Closest to You"
+        };
+
+        let hasAny = false;
+
+        for (const [key, spot] of Object.entries(parsed)) {
+            if (!spot || typeof spot !== "object") continue;
+            if (!spot.spaceid) continue;
+            hasAny = true;
+
+            const cost = spot.total_cost != null ? `$${spot.total_cost.toFixed(2)}` : "N/A";
+            const walk = spot.walk_time != null ? `${spot.walk_time.toFixed(1)} min walk` : "N/A";
+            const dist = spot.user_distance != null ? `${Math.round(spot.user_distance)}m from you` : "N/A";
+            const address = spot.blockface ?? "Unknown address";
+            const occupancyColor = spot.occupancy === "VACANT" ? "#16a34a" : "#6b7280";
+
+            const card = document.createElement("div");
+            card.className = "featured-card";
+            card.innerHTML = `
+                <div class="featured-card-label">${labels[key] ?? key}</div>
+                <div class="featured-card-address">${address}</div>
+                <div class="featured-card-stats">
+                    <span>🚶 ${walk}</span>
+                    <span>📍 ${dist}</span>
+                    <span>💰 ${cost}</span>
+                    <span style="color:${occupancyColor}">● ${spot.occupancy}</span>
+                </div>
+            `;
+            container.appendChild(card);
+        }
+
+        if (hasAny) {
+            const heading = document.querySelector("#featured-section .panel_title");
+            console.log("parsed address:", parsed.address);
+            heading.textContent = parsed.address
+                ? `Your previous search at ${parsed.address.split(",")[0]}`
+                : "Your previous search";
+            section.style.display = "block";
+        }
+
+    } catch (e) {
+        console.error("loadFeatured error:", e);
+    }
+}
+
+loadFeatured();
 
 </script>
 
