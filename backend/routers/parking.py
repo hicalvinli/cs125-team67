@@ -62,15 +62,15 @@ def haversine(lat1, lon1, lat2, lon2):
     a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-# sortBy can be: [time, venue_distance, user_distance, or price]
+# sortBy can be: [time, user_distance, or price]
 @router.get("/")
 async def get_parking(address: str, max_walk: int, time: str, sortBy: str, usr_lat: float, usr_lon: float):
 
     # min_time expected in format HH:MM
-    minutes = int(time.split(":")[0]) * 60 + int(time.split(":")[1])
+    desired_parking_minutes = int(time.split(":")[0]) * 60 + int(time.split(":")[1])
     valid_times = []
     for k in TIME_LIMITS.keys():
-        if k >= minutes:
+        if k >= desired_parking_minutes:
             valid_times.append(TIME_LIMITS[k])
     valid_times = ",".join(f"'{time_limit}'" for time_limit in valid_times)
 
@@ -145,18 +145,17 @@ async def get_parking(address: str, max_walk: int, time: str, sortBy: str, usr_l
                     meter["walk_distance"], meter["walk_time"] = dist, minutes
 
                 # Calculate total cost
-                meter["total_cost"] = parse_and_calculate_cost(meter["raterange"], minutes)
+                meter["total_cost"] = parse_and_calculate_cost(meter["raterange"], desired_parking_minutes)
 
                 # Calculate distance to the user
-                meter["user_distance"] = haversine(usr_lat, usr_lon, **meter["latlng"])
+                meter["user_distance"] = haversine(usr_lat, usr_lon, meter["latlng"]["latitude"], meter["latlng"]["longitude"])
 
                 new_meter_info[spaceid] = meter
         del meter_info
         meter_info = new_meter_info
         print(f"Found {len(meter_info)} available spots near {lat}, {lon}")
 
-        sort_lambdas = {"time": lambda item: (item[1]['walk_time'], item[1]['walk_distance']),
-                        "venue_distance": lambda item: (item[1]['walk_distance'], item[1]['walk_time']),
+        sort_lambdas = {"time": lambda item: (item[1]['walk_time'], item[1]['total_cost']),
                         "price": lambda item: (item[1]['total_cost'], item[1]['walk_time']),
                         "user_distance": lambda item: (item[1]['user_distance'], item[1]['walk_time'])
                         }
