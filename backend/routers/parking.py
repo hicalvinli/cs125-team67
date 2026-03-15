@@ -53,10 +53,18 @@ def parse_and_calculate_cost(rate_range: str, minutes):
 
         return min(regular_cost, jump_cost)
 
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371000
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 # sortBy can be: [time, venue_distance, user_distance, or price]
 @router.get("/")
-async def get_parking(address: str, max_walk: int, time: str, sortBy: str, usr_loc: str):
+async def get_parking(address: str, max_walk: int, time: str, sortBy: str, usr_lat: float, usr_lon: float):
 
     # min_time expected in format HH:MM
     minutes = int(time.split(":")[0]) * 60 + int(time.split(":")[1])
@@ -139,6 +147,9 @@ async def get_parking(address: str, max_walk: int, time: str, sortBy: str, usr_l
                 # Calculate total cost
                 meter["total_cost"] = parse_and_calculate_cost(meter["raterange"], minutes)
 
+                # Calculate distance to the user
+                meter["user_distance"] = haversine(usr_lat, usr_lon, **meter["latlng"])
+
                 new_meter_info[spaceid] = meter
         del meter_info
         meter_info = new_meter_info
@@ -147,7 +158,7 @@ async def get_parking(address: str, max_walk: int, time: str, sortBy: str, usr_l
         sort_lambdas = {"time": lambda item: (item[1]['walk_time'], item[1]['walk_distance']),
                         "venue_distance": lambda item: (item[1]['walk_distance'], item[1]['walk_time']),
                         "price": lambda item: (item[1]['total_cost'], item[1]['walk_time']),
-                        "user_distance": None
+                        "user_distance": lambda item: (item[1]['user_distance'], item[1]['walk_time'])
                         }
 
         # Return sorted results in json format
