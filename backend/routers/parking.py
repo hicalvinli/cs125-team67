@@ -1,0 +1,318 @@
+import os
+import re
+import time
+import math
+import json
+import httpx
+import osmnx as ox
+import networkx as nx
+from datetime import datetime
+from fastapi import APIRouter
+from dotenv import load_dotenv
+from fastapi import HTTPException
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderServiceError
+
+load_dotenv()
+DELTA = 5
+WALKING_SPEED = 1.3
+METER_URL = "https://data.lacity.org/api/v3/views/s49e-q6j2/query.json"
+OCCUPANCY_URL = "https://data.lacity.org/api/v3/views/e7h6-4a3e/query.json"
+TIME_LIMITS = {15: "15MIN", 30: "30MIN", 60: "1HR", 120: "2HR", 150: "2HR-30MIN", 240: "4HR",
+               360: "6HR", 420: "7HR", 600: "10HR", 840: "14HR"}
+USER_HISTORY_FILE = "user_history.json"
+SAVED_SEARCH_FILE = "saved_last_search.json"
+DEFAULT_WEIGHTS = {"w_time": 1.0, "w_distance": 1.0, "w_cost": 1.0}
+
+geolocator = Nominatim(user_agent="cs125_parkwise")
+
+router = APIRouter(
+    prefix="/api/parking"
+)
+
+def get_lat_lon(address: str) -> (float, float):
+    location = geolocator.geocode(address)
+    if location:
+        # Extract latitude and longitude
+        latitude = location.latitude
+        longitude = location.longitude
+        return latitude, longitude
+    else:
+        raise ValueError
+
+def get_address(lat: float, lon: float) -> str:
+    location = geolocator.reverse(f"{lat}, {lon}")
+    if (location):
+        return location.address
+    else:
+        raise ValueError
+
+def parse_and_calculate_cost(rate_range: str, minutes) -> float:
+    hours = math.ceil(minutes / 60)
+    if rate_range[-1] != "H":
+        per_hour = float(rate_range.split("$")[-1])
+        return hours * per_hour
+    else:
+        per_hour, jump = rate_range.split(" - ")
+        per_hour = float(re.sub(r'[^\d.]', '', per_hour))
+        regular_cost = hours * per_hour
+
+        jump_per_hour, jump = jump.split("/")
+        jump = float(jump[:-1])
+        jump_per_hour = float(re.sub(r'[^\d.]', '', jump_per_hour))
+        jump_cost = math.ceil(hours / jump) * jump_per_hour
+
+        return min(regular_cost, jump_cost)
+
+def haversine(lat1, lon1, lat2, lon2) -> float:
+    R = 6371000
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def load_history() -> dict:
+    if not os.path.exists(USER_HISTORY_FILE):
+        return {}
+    with open(USER_HISTORY_FILE, "r") as f:
+        return json.load(f)
+
+def save_search(user_id: str, address: str, lat: float, lon: float, spaces: dict) -> None:
+    history = load_history()
+    history[user_id] = {
+        "address": address,
+        "lat": lat,
+        "lon": lon,
+        "featured_spaces": spaces,
+        "weights": history.get(user_id, {}).get("weights", DEFAULT_WEIGHTS.copy()),
+        "timestamp": time.time()
+    }
+
+    with open(USER_HISTORY_FILE, "w") as f:
+        json.dump(history, f)
+
+def get_weights(user_id: str) -> dict:
+    history = load_history()
+    return history.get(user_id, {}).get("weights", DEFAULT_WEIGHTS.copy())
+
+def update_weights(user_id: str, selected_space: dict, spaces: dict):
+    weights = get_weights(user_id)
+    history = load_history()
+
+    # Get average of metrics
+    avg_time = sum(s["walk_time"] for s in spaces.values()) / len(spaces)
+    avg_cost = sum(s["total_cost"] for s in spaces.values()) / len(spaces)
+    avg_dist = sum(s["user_distance"] for s in spaces.values()) / len(spaces)
+
+    # If selected was better than average, increase weight
+    if selected_space["total_cost"] < avg_cost:
+        weights["w_cost"] *= 1.2
+    if selected_space["walk_time"] < avg_time:
+        weights["w_time"] *= 1.2
+    if selected_space["user_distance"] < avg_dist:
+        weights["w_distance"] *= 1.2
+
+    # Normalize
+    total = sum(weights.values())
+    weights = {k: v / total for k, v in weights.items()}
+
+    history[user_id]["weights"] = weights
+    with open(USER_HISTORY_FILE, "w") as f:
+        json.dump(history, f)
+
+
+def score(space: dict, weights: dict, max_time: float, max_dist: float, max_cost: float) -> float:
+    # Lower score is better, since lower walk_time, user_distance, and total_cost is (intuitively) better
+    # Normalize dimensions to prevent distance taking over
+    norm_time = space["walk_time"] / max_time if max_time else 0
+    norm_dist = space["user_distance"] / max_dist if max_dist else 0
+    norm_cost = space["total_cost"] / max_cost if max_cost else 0
+
+    return (weights["w_time"] * norm_time +
+            weights["w_distance"] * norm_dist +
+            weights["w_cost"] * norm_cost)
+
+def save_results(user_id: str, spaces: dict) -> None:
+    searches = load_results(user_id)
+    searches[user_id] = spaces
+    with open(SAVED_SEARCH_FILE, "w") as f:
+        json.dump(searches, f)
+
+def load_results(user_id: str) -> dict:
+    if not os.path.exists(SAVED_SEARCH_FILE):
+        return {}
+    with open(SAVED_SEARCH_FILE, "r") as f:
+        searches = json.load(f)
+    return searches.get(user_id, {})
+
+# sortBy can be: [time, user_distance, price, or default]
+@router.get("/")
+async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_lat: float, usr_lon: float, sortBy: str = "default"):
+
+    # Increase occupancy penalty in peak hours
+    hour = datetime.now().hour
+    is_peak = 7 <= hour <= 9 or 16 <= hour <= 19 or 11 <= hour <= 1
+    occupancy_penalty = 0.25 if is_peak else 0.1
+
+    # min_time expected in format HH:MM
+    desired_parking_minutes = int(time.split(":")[0]) * 60 + int(time.split(":")[1])
+    valid_times = []
+    for k in TIME_LIMITS.keys():
+        if k >= desired_parking_minutes:
+            valid_times.append(TIME_LIMITS[k])
+    valid_times = ",".join(f"'{time_limit}'" for time_limit in valid_times)
+
+    # Geocode provided address
+    try:
+        lat, lon = get_lat_lon(address)
+    except ValueError:
+        raise HTTPException(status_code = 400, detail = "Invalid address")
+    except GeocoderServiceError as e:
+        print(f"Geocoding service error: {e}")
+        raise HTTPException(status_code = 503, detail = "Geocoding service unavailable")
+
+    # Calculate radius with walk speed
+    radius = max_walk * 60 * WALKING_SPEED
+
+    # Get nearby parking meters
+    json_body = {
+        "query": f"SELECT spaceid, blockface, ratetype, raterange, timelimit, latlng "
+                 f"WHERE within_circle(LatLng, {lat}, {lon}, {radius}) and timelimit in ({valid_times})"
+    }
+    headers = {
+        "X-App-Token": os.getenv("APP_TOKEN"),
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(METER_URL, json=json_body, headers=headers)
+        response.raise_for_status()
+        meter_info = {i["spaceid"]: i for i in response.json()}
+
+        print(f"Found {len(response.json())} total spots near {lat}, {lon}")
+
+        # Get available spots in chunks
+        chunk_size = 500
+        occupancy_data = []
+
+        space_ids = list(meter_info.keys())
+        for i in range(0, len(space_ids), chunk_size):
+            chunk = space_ids[i:i + chunk_size]
+            id_list = ",".join(f"'{sid}'" for sid in chunk)
+            json_body = {
+                "query": f"select spaceid, eventtime, occupancystate where spaceid in ({id_list})"
+            }
+            response = await client.post(OCCUPANCY_URL, json=json_body, headers=headers)
+            occupancy_data.extend(response.json())
+        occupancy_data = {i['spaceid']: i for i in occupancy_data}
+
+        print(f"Found {len(occupancy_data)} occupancy results")
+
+        # This downloading of graph is a bottleneck, not sure how to fix
+        G = ox.graph_from_point((lat, lon), dist = radius + 100, network_type = 'walk')
+
+        start_node = ox.nearest_nodes(G, lon, lat)
+        lengths = nx.single_source_dijkstra_path_length(G, start_node, weight = 'length')
+
+        new_meter_info = {}
+        for spaceid, meter in meter_info.items():
+            spot = occupancy_data.get(spaceid, {"occupancystate": "UNKNOWN", "eventtime": "1970-01-01T00:00:00Z"})
+            if spot["occupancystate"] == "UNKNOWN" or spot["occupancystate"] == "VACANT":
+                meter["occupancy"] = spot["occupancystate"]
+                meter["last_updated"] = spot["eventtime"]
+
+                # Calculate walking distance while making a pass anyway
+                dest_node = ox.nearest_nodes(G, meter["latlng"]["longitude"], meter["latlng"]["latitude"])
+                dist = float(lengths.get(dest_node, float('inf')))
+                minutes = float(dist / WALKING_SPEED / 60)
+
+                # Discard if too much greater than specified walk time
+                if minutes > max_walk + DELTA:
+                    continue
+                else:
+                    meter["walk_distance"], meter["walk_time"] = dist, minutes
+
+                # If occupancy state is unknown, penalize walk_time so it is ranked below known vacant spots
+                meter["adjusted_walk_time"] = meter["walk_time"] + (occupancy_penalty if meter["occupancy"] == "UNKNOWN" else 0)
+
+                # Calculate total cost
+                meter["total_cost"] = parse_and_calculate_cost(meter["raterange"], desired_parking_minutes)
+
+                # Calculate distance to the user
+                meter["user_distance"] = haversine(usr_lat, usr_lon, meter["latlng"]["latitude"], meter["latlng"]["longitude"])
+
+                new_meter_info[spaceid] = meter
+        del meter_info
+        meter_info = new_meter_info
+        print(f"Found {len(meter_info)} available spots near {lat}, {lon}")
+        if not meter_info:
+            return {}
+
+        max_time = max(s["walk_time"] for s in meter_info.values())
+        max_dist = max(s["user_distance"] for s in meter_info.values())
+        max_cost = max(s["total_cost"] for s in meter_info.values())
+        weights = get_weights(user_id)
+        for space_id in meter_info.keys():
+            meter_info[space_id]["score"] = score(meter_info[space_id], weights, max_time, max_dist, max_cost)
+
+        save_results(user_id, meter_info)
+
+        if len(meter_info) > 0:
+            # Get official address
+            try:
+                full_address = get_address(lat, lon)
+            except ValueError:
+                raise HTTPException(status_code = 400, detail = "Invalid lat/lon")
+            except GeocoderServiceError as e:
+                print(f"Geocoding service error: {e}")
+                raise HTTPException(status_code = 503, detail = "Geocoding service unavailable")
+
+            # Save search
+            save_search(user_id, full_address, lat, lon, {
+                "best": min(meter_info.values(), key = lambda item: item["score"]),
+                "closest_to_user": min(meter_info.values(), key = lambda item: item["user_distance"]),
+                "cheapest": min(meter_info.values(), key = lambda item: item["total_cost"]),
+                "closest_to_venue": min(meter_info.values(), key = lambda item: item["walk_time"])
+            })
+
+        sort_lambdas = {"default": lambda item: (item[1]['score'], item[1]["adjusted_walk_time"]),
+                        "time": lambda item: (item[1]['adjusted_walk_time'], item[1]['total_cost']),
+                        "price": lambda item: (item[1]['total_cost'], item[1]['adjusted_walk_time']),
+                        "user_distance": lambda item: (item[1]['user_distance'], item[1]['adjusted_walk_time'])
+                        }
+
+        # Return structured response with search location and sorted parking spots
+        return {
+            "search_location": {
+                "latitude": lat,
+                "longitude": lon
+            },
+            "parking_spots": dict(sorted(
+                meter_info.items(),
+                key=sort_lambdas[sortBy]
+            ))
+        }
+
+        # # Return sorted results in json format, easier for backend testing. Comment out for prod
+        # return json.dumps(dict(sorted(
+        #     meter_info.items(),
+        #     key=sort_lambdas[sortBy]
+        # )))
+
+@router.get("/suggestions")
+async def get_suggestions(user_id: str):
+    user_history = load_history().get(user_id, None)
+    if user_history is not None:
+        result = dict(user_history["featured_spaces"])
+        result["address"] = user_history.get("address", "")
+        return result
+    else:
+        return {}
+
+@router.post("/select")
+async def record_selection(user_id: str, space_id: str):
+    spots = load_results(user_id)
+    selected = spots[space_id]
+    update_weights(user_id, selected, spots)
+    return {"status": "ok"}

@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ParkWise LA — Home</title>
     <link rel="stylesheet" href="../static/css/style.css" />
+
+    <!-- Leaflet CSS -->
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
 </head>
 <body>
 
@@ -18,39 +24,40 @@
         <div class="search" role="search" aria-label="Parking search">
             <div class="search_seg">
                 <div class="search_label">Where</div>
-                <input class="search_input" type="text" placeholder="Search destinations" />
+                <input id="address" class="search_input" type="text" placeholder="Search destinations" />
             </div>
 
             <div class="search_divider" aria-hidden="true"></div>
 
             <div class="search_seg">
-                <div class="search_label">When</div>
-                <input class="search_input" type="text" placeholder="Add Dates" />
+                <div class="search_label">Duration (HH:MM)</div>
+                <input id="duration" class="search_input" type="text" placeholder="01:30" />
             </div>
 
             <div class="search_divider" aria-hidden="true"></div>
 
             <div class="search_seg search_seg--small">
                 <div class="search_label">Max Walk (min)</div>
-                <input class="search_input" type="text" placeholder="10" />
+                <input id="max_walk" class="search_input" type="text" placeholder="10" />
             </div>
 
             <div class="search_divider" aria-hidden="true"></div>
 
             <div class="search_seg search_seg--last">
-                <div class="search_label">Source</div>
-                <select class="search_select">
-                    <option>Verified Host</option>
-                    <option>Unverified Host</option>
+                <div class="search_label">Sort By</div>
+                <select id="sort_by" class="search_select">
+                    <option value="default">Recommended</option>
+                    <option value="time">Walk Time</option>
+                    <option value="user_distance">Distance to You</option>
+                    <option value="price">Price</option>
                 </select>
             </div>
 
-            <a class="search_btn" href="#" aria-label="Search">
+            <a id="search_btn" class="search_btn" href="#" aria-label="Search">
                 <span class="search_icon" aria-hidden="true">🔍</span>
             </a>
         </div>
 
-        <!-- Right: Actions -->
         <div class="header-actions">
             <a class="header-actions_host" href="#">Become a host</a>
             <button class="header-actions_icon" type="button" aria-label="Language">🌐</button>
@@ -63,8 +70,13 @@
     <section class="hero">
         <h1 class="hero_title">Quickly Find Parking in LA.</h1>
         <p class="hero_subtitle">
-            Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book.
+            Quickly search nearby parking and rank spots by walking time.
         </p>
+
+        <div id="featured-section" style="display:none;">
+            <h2 class="panel_title">You've searched here before</h2>
+            <div id="featured-cards" class="featured-grid"></div>
+        </div>
 
         <div class="map-shell">
             <div class="map-shell_top">
@@ -72,24 +84,422 @@
                 <div class="map-shell_legend"></div>
             </div>
 
-            <div class="map map--big" aria-label="Map placeholder">
-                <div class="map_grid"></div>
-                <div class="map_pin" aria-hidden="true"></div>
-            </div>
+            <div id="map" class="map map--big" style="height:500px;"></div>
         </div>
+
+        <div id="results"></div>
 
         <section class="row">
             <div class="panel">
                 <div class="panel_head">
                     <h2 class="panel_title">How it works</h2>
                     <p class="panel_desc">
-                        Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book.
+                        Enter a destination, how long you plan to park, and your maximum walking time. We search nearby parking meters and rank available spots by the shortest walking distance.
+                        <br><br>
+                        🔴 <strong>Red pin</strong> – Your searched destination.<br>
+                        🔵 <strong>Blue pin</strong> – Your current location (requested only when you search).<br>
+                        🟢 <strong>Green pins</strong> – Vacant parking spots.<br>
+                        ⚪ <strong>Gray pins</strong> – Parking spots with unknown status.<br>
                     </p>
                 </div>
             </div>
         </section>
     </section>
 </main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+
+// Initialize map
+let map = L.map('map').setView([34.0522, -118.2437], 12);
+
+// Base layers
+let standardLayer = L.tileLayer(
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { attribution: '&copy; OpenStreetMap contributors' }
+);
+
+let satelliteLayer = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/' +
+    'World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { attribution: 'Tiles © Esri' }
+);
+
+standardLayer.addTo(map);
+
+L.control.layers({
+    "Standard": standardLayer,
+    "Satellite": satelliteLayer
+}).addTo(map);
+
+let markersLayer = L.layerGroup().addTo(map);
+
+// Current location markers
+let userLocationMarker = null;
+let userLocationCircle = null;
+
+// Restore saved preferences
+const savedSort = localStorage.getItem("lastSortBy");
+const savedWalk = localStorage.getItem("lastMaxWalk");
+if (savedSort) document.getElementById("sort_by").value = savedSort;
+if (savedWalk) document.getElementById("max_walk").value = savedWalk;
+
+// Cache and pagination state
+let cachedSpots = null;
+let currentPage = 1;
+const PAGE_SIZE = 10;
+
+document.getElementById("search_btn").addEventListener("click", async function (e) {
+    e.preventDefault();
+
+    const address = document.getElementById("address").value.trim();
+    const duration = document.getElementById("duration").value.trim();
+    const max_walk = document.getElementById("max_walk").value.trim();
+    const sort_by = document.getElementById("sort_by").value;
+
+    if (!address || !max_walk) {
+        alert("Please enter an address and max walk time.");
+        return;
+    }
+
+    localStorage.setItem("lastSortBy", sort_by);
+    localStorage.setItem("lastMaxWalk", max_walk);
+
+    // default coords
+    let userLat = 34.0522;
+    let userLon = -118.2437;
+
+    try {
+        const pos = await new Promise((resolve, reject) =>
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+                timeout: 5000,
+                maximumAge: 300000,
+                enableHighAccuracy: false
+            })
+        );
+        userLat = pos.coords.latitude;
+        userLon = pos.coords.longitude;
+        console.log("Got location:", userLat, userLon);
+
+        if (userLocationMarker) map.removeLayer(userLocationMarker);
+        if (userLocationCircle) map.removeLayer(userLocationCircle);
+
+        userLocationMarker = L.circleMarker([userLat, userLon], {
+            radius: 9,
+            color: "#1d4ed8",
+            fillColor: "#3b82f6",
+            fillOpacity: 1
+        }).addTo(map);
+        userLocationMarker.bindPopup("<strong>Your Location</strong>");
+
+        userLocationCircle = L.circle([userLat, userLon], {
+            radius: coords.accuracy,
+            color: "#3b82f6",
+            fillColor: "#3b82f6",
+            fillOpacity: 0.15
+        }).addTo(map);
+    } catch (error) {
+        console.warn("Could not get user location, using default:", error.message);
+    }
+
+    try {
+        let url = `/api/parking?user_id=1&address=${encodeURIComponent(address)}&max_walk=${max_walk}&sortBy=default`;
+        if (duration) url += `&time=${encodeURIComponent(duration)}`;
+        url += `&usr_lat=${userLat}&usr_lon=${userLon}`;
+
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("Server error");
+
+        const data = await response.json();
+
+        // Cache all spots
+        cachedSpots = data;
+        currentPage = 1;
+
+        displayResults(data);
+
+    } catch (error) {
+        console.error(error);
+        alert("Error fetching parking data.");
+    }
+});
+
+// Re-sort from cache when sort changes
+document.getElementById("sort_by").addEventListener("change", function() {
+    if (!cachedSpots) return;
+    const sort_by = this.value;
+    localStorage.setItem("lastSortBy", sort_by);
+
+    const sorted = sortSpots(cachedSpots.parking_spots, sort_by);
+    currentPage = 1;
+    renderPage(sorted, cachedSpots.search_location);
+});
+
+function sortSpots(spots, sortBy) {
+    const entries = Object.entries(spots);
+    switch (sortBy) {
+        case "time":
+            entries.sort((a, b) => a[1].adjusted_walk_time - b[1].adjusted_walk_time);
+            break;
+        case "venue_distance":
+            entries.sort((a, b) => a[1].walk_distance - b[1].walk_distance);
+            break;
+        case "user_distance":
+            entries.sort((a, b) => a[1].user_distance - b[1].user_distance);
+            break;
+        case "price":
+            entries.sort((a, b) => a[1].total_cost - b[1].total_cost);
+            break;
+        default: // recommended/default
+            entries.sort((a, b) => a[1].score - b[1].score);
+            break;
+    }
+    return Object.fromEntries(entries);
+}
+
+function displayResults(responseData) {
+    const sorted = sortSpots(responseData.parking_spots, document.getElementById("sort_by").value);
+    renderPage(sorted, responseData.search_location);
+    updateMapMarkers(responseData.search_location, responseData.parking_spots);
+}
+
+function renderPage(spots, searchLocation) {
+    const resultDiv = document.getElementById("results");
+    resultDiv.innerHTML = "";
+
+    const entries = Object.entries(spots);
+    const count = entries.length;
+    const totalPages = Math.ceil(count / PAGE_SIZE);
+    const start = (currentPage - 1) * PAGE_SIZE;
+    const pageEntries = entries.slice(start, start + PAGE_SIZE);
+
+    const messageDiv = document.createElement("div");
+    if (count === 0) {
+        messageDiv.innerHTML = `<p style="color:#dc2626; font-weight:600;">❌ No parking spots found within your walking limit.</p><hr>`;
+    } else {
+        messageDiv.innerHTML = `<p style="color:#16a34a; font-weight:600;">✅ ${count} spot${count > 1 ? 's' : ''} found. Showing ${start + 1}–${Math.min(start + PAGE_SIZE, count)}.</p><hr>`;
+    }
+    resultDiv.appendChild(messageDiv);
+
+    for (const [spaceid, spot] of pageEntries) {
+        const rateRange = spot.raterange ?? "N/A";
+        const rateType = spot.ratetype ?? "N/A";
+        const timeLimit = spot.timelimit ?? "N/A";
+        const totalCost = spot.total_cost != null ? `$${spot.total_cost.toFixed(2)}` : "N/A";
+        const userDist = spot.user_distance != null ? `${Math.round(spot.user_distance)}m` : "N/A";
+        const walkTime = spot.walk_time.toFixed(1);
+        const blockface = spot.blockface ?? "Unknown address";
+        const occupancy = spot.occupancy;
+        const lastUpdated = spot.last_updated !== "1970-01-01T00:00:00Z"
+            ? new Date(spot.last_updated).toLocaleString()
+            : "No recent data";
+        const lat = spot.latlng.latitude;
+        const lon = spot.latlng.longitude;
+        const occupancyColor = occupancy === "VACANT" ? "#16a34a" : "#6b7280";
+
+        const card = document.createElement("div");
+        card.className = "spot-card";
+        card.innerHTML = `
+            <div class="spot-summary" onclick="toggleCard(this)">
+                <div class="spot-summary-left">
+                    <span class="spot-address">${blockface}</span>
+                    <span class="spot-status" style="color:${occupancyColor}">● ${occupancy}</span>
+                </div>
+                <div class="spot-summary-right">
+                    <span>🚶 ${walkTime} min</span>
+                    <span>📍 ${userDist}</span>
+                    <span>💰 ${totalCost}</span>
+                    <span class="spot-chevron">▼</span>
+                </div>
+            </div>
+            <div class="spot-detail" style="display:none;">
+                <p><strong>Space ID:</strong> ${spaceid}</p>
+                <p><strong>Rate Type:</strong> ${rateType}</p>
+                <p><strong>Rate Range:</strong> ${rateRange}</p>
+                <p><strong>Time Limit:</strong> ${timeLimit}</p>
+                <p><strong>Last Updated:</strong> ${lastUpdated}</p>
+                <div class="spot-actions">
+                    <button class="btn-select" onclick="selectSpot('${spaceid}', ${lat}, ${lon})">
+                        ✅ Select this spot
+                    </button>
+                    <a class="btn-directions"
+                       href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}"
+                       target="_blank"
+                       onclick="selectSpot('${spaceid}', ${lat}, ${lon})">
+                        🗺 Get Directions
+                    </a>
+                </div>
+            </div>
+        `;
+        resultDiv.appendChild(card);
+    }
+
+    // Pagination
+    if (totalPages > 1) {
+        const pagDiv = document.createElement("div");
+        pagDiv.className = "pagination";
+
+        if (currentPage > 1) {
+            const prev = document.createElement("button");
+            prev.textContent = "← Previous";
+            prev.onclick = () => { currentPage--; renderPage(spots, searchLocation); };
+            pagDiv.appendChild(prev);
+        }
+
+        const pageInfo = document.createElement("span");
+        pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+        pagDiv.appendChild(pageInfo);
+
+        if (currentPage < totalPages) {
+            const next = document.createElement("button");
+            next.textContent = "Next →";
+            next.onclick = () => { currentPage++; renderPage(spots, searchLocation); };
+            pagDiv.appendChild(next);
+        }
+
+        resultDiv.appendChild(pagDiv);
+    }
+}
+
+function toggleCard(summaryEl) {
+    const detail = summaryEl.nextElementSibling;
+    const chevron = summaryEl.querySelector(".spot-chevron");
+    const isOpen = detail.style.display !== "none";
+    detail.style.display = isOpen ? "none" : "block";
+    chevron.textContent = isOpen ? "▼" : "▲";
+}
+
+async function selectSpot(spaceid, lat, lon) {
+    try {
+        await fetch(`/api/parking/select?user_id=1&space_id=${spaceid}`, {
+            method: "POST"
+        });
+    } catch (e) {
+        console.warn("Could not update selection weights:", e);
+    }
+}
+
+function updateMapMarkers(searchLocation, spots) {
+    markersLayer.clearLayers();
+    const bounds = [];
+
+    const searchMarker = L.circleMarker([searchLocation.latitude, searchLocation.longitude], {
+        radius: 10, color: "#dc2626", fillColor: "#ef4444", fillOpacity: 0.9
+    }).addTo(markersLayer);
+    searchMarker.bindPopup("<strong>Searched Location</strong>");
+    bounds.push([searchLocation.latitude, searchLocation.longitude]);
+
+    for (const [spaceid, spot] of Object.entries(spots)) {
+        const lat = spot.latlng.latitude;
+        const lon = spot.latlng.longitude;
+        bounds.push([lat, lon]);
+
+        const color = spot.occupancy === "VACANT" ? "#16a34a" : "#6b7280";
+        const marker = L.circleMarker([lat, lon], {
+            radius: 8, color, fillColor: color, fillOpacity: 0.8
+        }).addTo(markersLayer);
+
+        marker.bindPopup(`
+            <strong>Spot ID:</strong> ${spaceid}<br>
+            Walk Time: ${spot.walk_time.toFixed(2)} mins<br>
+            Status: ${spot.occupancy}
+        `);
+    }
+
+    if (bounds.length > 0) map.fitBounds(bounds, { padding: [50, 50] });
+}
+
+async function loadFeatured() {
+    try {
+        const response = await fetch("/api/parking/suggestions?user_id=1");
+        if (!response.ok) return;
+
+        const data = await response.json();
+        const parsed = typeof data === "string" ? JSON.parse(data) : data;
+        console.log("Parsed:", parsed);
+
+        const section = document.getElementById("featured-section");
+        const container = document.getElementById("featured-cards");
+        container.innerHTML = "";
+
+        const labels = {
+            best: "⭐ Best Overall",
+            cheapest: "💰 Cheapest",
+            closest_to_venue: "🎯 Closest to Venue",
+            closest_to_user: "📍 Closest to You"
+        };
+
+        let hasAny = false;
+
+        for (const [key, spot] of Object.entries(parsed)) {
+            if (!spot || typeof spot !== "object") continue;
+            if (!spot.spaceid) continue;
+            hasAny = true;
+
+            const cost = spot.total_cost != null ? `$${spot.total_cost.toFixed(2)}` : "N/A";
+            const walk = spot.walk_time != null ? `${spot.walk_time.toFixed(1)} min walk` : "N/A";
+            const dist = spot.user_distance != null ? `${Math.round(spot.user_distance)}m from you` : "N/A";
+            const address = spot.blockface ?? "Unknown address";
+            const occupancyColor = spot.occupancy === "VACANT" ? "#16a34a" : "#6b7280";
+
+            const card = document.createElement("div");
+            card.className = "featured-card";
+            card.style.cursor = "pointer";
+            card.innerHTML = `
+                <div class="featured-card-label">${labels[key] ?? key}</div>
+                <div class="featured-card-address">${address}</div>
+                <div class="featured-card-stats">
+                    <span>🚶 ${walk}</span>
+                    <span>📍 ${dist}</span>
+                    <span>💰 ${cost}</span>
+                    <span style="color:${occupancyColor}">● ${spot.occupancy}</span>
+                </div>
+                <div class="featured-card-detail" style="display:none; margin-top:12px; border-top:1px solid var(--stroke2); padding-top:10px;">
+                    <p style="margin:4px 0; font-size:0.82rem; color:var(--muted)"><strong style="color:var(--text)">Space ID:</strong> ${spot.spaceid}</p>
+                    <p style="margin:4px 0; font-size:0.82rem; color:var(--muted)"><strong style="color:var(--text)">Rate Type:</strong> ${spot.ratetype ?? "N/A"}</p>
+                    <p style="margin:4px 0; font-size:0.82rem; color:var(--muted)"><strong style="color:var(--text)">Rate Range:</strong> ${spot.raterange ?? "N/A"}</p>
+                    <p style="margin:4px 0; font-size:0.82rem; color:var(--muted)"><strong style="color:var(--text)">Time Limit:</strong> ${spot.timelimit ?? "N/A"}</p>
+                    <div style="display:flex; gap:10px; margin-top:12px;">
+                        <button class="btn-select" onclick="selectSpot('${spot.spaceid}', ${spot.latlng.latitude}, ${spot.latlng.longitude}); event.stopPropagation();">
+                            ✅ Select this spot
+                        </button>
+                        <a class="btn-directions"
+                           href="https://www.google.com/maps/dir/?api=1&destination=${spot.latlng.latitude},${spot.latlng.longitude}"
+                           target="_blank"
+                           onclick="selectSpot('${spot.spaceid}', ${spot.latlng.latitude}, ${spot.latlng.longitude}); event.stopPropagation();">
+                            🗺 Get Directions
+                        </a>
+                    </div>
+                </div>
+            `;
+
+            card.addEventListener("click", function() {
+                const detail = this.querySelector(".featured-card-detail");
+                const isOpen = detail.style.display !== "none";
+                detail.style.display = isOpen ? "none" : "block";
+            });
+
+            container.appendChild(card);
+        }
+
+        if (hasAny) {
+            const heading = document.querySelector("#featured-section .panel_title");
+            console.log("parsed address:", parsed.address);
+            heading.textContent = parsed.address
+                ? `Your previous search at ${parsed.address.split(",")[0]}`
+                : "Your previous search";
+            section.style.display = "block";
+        }
+
+    } catch (e) {
+        console.error("loadFeatured error:", e);
+    }
+}
+
+loadFeatured();
+
+</script>
 
 </body>
 </html>
