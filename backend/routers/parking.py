@@ -20,6 +20,7 @@ METER_URL = "https://data.lacity.org/api/v3/views/s49e-q6j2/query.json"
 OCCUPANCY_URL = "https://data.lacity.org/api/v3/views/e7h6-4a3e/query.json"
 TIME_LIMITS = {15: "15MIN", 30: "30MIN", 60: "1HR", 120: "2HR", 150: "2HR-30MIN", 240: "4HR",
                360: "6HR", 420: "7HR", 600: "10HR", 840: "14HR"}
+HISTORY_FILE = "user_history.json"
 
 geolocator = Nominatim(user_agent="cs125_parkwise")
 
@@ -37,7 +38,14 @@ def get_lat_lon(address: str) -> (float, float):
     else:
         raise ValueError
 
-def parse_and_calculate_cost(rate_range: str, minutes):
+def get_address(lat: float, lon: float) -> str:
+    location = geolocator.reverse(f"{lat}, {lon}")
+    if (location):
+        return location.address
+    else:
+        raise ValueError
+
+def parse_and_calculate_cost(rate_range: str, minutes) -> float:
     hours = math.ceil(minutes / 60)
     if rate_range[-1] != "H":
         per_hour = float(rate_range.split("$")[-1])
@@ -54,7 +62,7 @@ def parse_and_calculate_cost(rate_range: str, minutes):
 
         return min(regular_cost, jump_cost)
 
-def haversine(lat1, lon1, lat2, lon2):
+def haversine(lat1, lon1, lat2, lon2) -> float:
     R = 6371000
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
 
@@ -63,9 +71,28 @@ def haversine(lat1, lon1, lat2, lon2):
     a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+def load_history() -> dict:
+    if not os.path.exists(HISTORY_FILE):
+        return {}
+    with open(HISTORY_FILE, "r") as f:
+        return json.load(f)
+
+def save_search(user_id: str, address: str, lat: float, lon: float, spaces: dict) -> None:
+    history = load_history()
+    history[user_id] = {
+        "address": address,
+        "lat": lat,
+        "lon": lon,
+        "featured_spaces": spaces,
+        "timestamp": time.time()
+    }
+
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f)
+
 # sortBy can be: [time, user_distance, or price]
 @router.get("/")
-async def get_parking(address: str, max_walk: int, time: str, usr_lat: float, usr_lon: float, sortBy: str = "time"):
+async def get_parking(user_id: str, address: str, max_walk: int, time: str, usr_lat: float, usr_lon: float, sortBy: str = "time"):
 
     # Increase occupancy penalty in peak hours
     hour = datetime.now().hour
@@ -164,6 +191,21 @@ async def get_parking(address: str, max_walk: int, time: str, usr_lat: float, us
         meter_info = new_meter_info
         print(f"Found {len(meter_info)} available spots near {lat}, {lon}")
 
+        # Get official address
+        try:
+            full_address = get_address(lat, lon)
+        except ValueError:
+            raise HTTPException(status_code = 400, detail = "Invalid lat/lon")
+        except GeocoderServiceError as e:
+            print(f"Geocoding service error: {e}")
+            raise HTTPException(status_code = 503, detail = "Geocoding service unavailable")
+
+        save_search(user_id, full_address, lat, lon, {
+            "closest": min(meter_info.values(), key = lambda item: item["walk_time"]),
+            "cheapest": min(meter_info.values(), key = lambda item: item["total_cost"]),
+            "best": min(meter_info.values(), key = lambda item: item["walk_time"] + item["total_cost"])
+        })
+
         sort_lambdas = {"time": lambda item: (item[1]['adjusted_walk_time'], item[1]['total_cost']),
                         "price": lambda item: (item[1]['total_cost'], item[1]['adjusted_walk_time']),
                         "user_distance": lambda item: (item[1]['user_distance'], item[1]['adjusted_walk_time'])
@@ -174,3 +216,7 @@ async def get_parking(address: str, max_walk: int, time: str, usr_lat: float, us
             meter_info.items(),
             key=sort_lambdas[sortBy]
         )))
+
+@router.get("/suggestions")
+async def get_suggestions(user_id: str):
+    with open("r", f"{user_id}.json") as f:
